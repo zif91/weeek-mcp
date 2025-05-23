@@ -1,0 +1,26 @@
+{
+    "name": "streeboga/weeek-mcp",
+    "autoload": {
+        "psr-4": {
+            "WeeekMcp\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Konstantin Mazurov",
+            "email": "streeboge@yandex.ru"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "pronskiy/mcp": "dev-main",
+        "guzzlehttp/guzzle": "^7.0",
+        "weeek/weeek-client-php": "dev-main",
+        "monolog/monolog": "^3.0@dev"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": true
+        }
+    }
+}

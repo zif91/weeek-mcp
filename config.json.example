@@ -1,0 +1,7 @@
+{
+    "auth": {
+        "weeek_api_token": "ваш_токен_weeek_api"
+    },
+    "default_project_id": "id_проекта_по_умолчанию",
+    "timezone": "Europe/Moscow"
+} 
