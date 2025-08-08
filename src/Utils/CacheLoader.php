@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 namespace WeeekMcp\Utils;
 
@@ -7,9 +8,9 @@ use WeeekMcp\Utils\Cache;
 
 class CacheLoader
 {
-    public $weeekClient;
-    public $cache;
-    public $config;
+    public WeeekClient $weeekClient;
+    public Cache $cache;
+    public array $config;
 
     public function __construct(WeeekClient $weeekClient, array $config)
     {
@@ -18,7 +19,34 @@ class CacheLoader
         $this->config = $config;
     }
 
-    public function loadAllData()
+    /**
+     * Возвращает HTTP-клиент Weeek SDK. Если публичного свойства нет,
+     * использует рефлексию для доступа к внутреннему клиенту.
+     */
+    private function getHttpClient(): object
+    {
+        // Попытка использовать публичное свойство, если оно существует
+        if (property_exists($this->weeekClient, 'http') && $this->weeekClient->http) {
+            /** @var object $http */
+            $http = $this->weeekClient->http;
+            return $http;
+        }
+
+        // Фолбэк: достать http-клиент через taskManager
+        if (property_exists($this->weeekClient, 'taskManager') && $this->weeekClient->taskManager) {
+            $reflection = new \ReflectionProperty($this->weeekClient->taskManager, 'http');
+            $reflection->setAccessible(true);
+            $http = $reflection->getValue($this->weeekClient->taskManager);
+            if (!$http) {
+                throw new \RuntimeException('Weeek HTTP client is not available');
+            }
+            return $http;
+        }
+
+        throw new \RuntimeException('Weeek HTTP client is not accessible');
+    }
+
+    public function loadAllData(): bool
     {
         $this->loadProjects();
         $this->loadTags();
@@ -30,24 +58,24 @@ class CacheLoader
     }
 
     // Публичный метод для обновления тегов
-    public function reloadTags()
+    public function reloadTags(): bool
     {
         return $this->loadTags();
     }
 
     // Публичный метод для обновления досок
-    public function reloadBoards()
+    public function reloadBoards(): bool
     {
         return $this->loadBoards();
     }
 
     // Публичный метод для обновления задач
-    public function reloadTasks()
+    public function reloadTasks(): bool
     {
         return $this->loadTasks();
     }
 
-    public function loadProjects()
+    public function loadProjects(): bool
     {
         try {
             $response = $this->weeekClient->taskManager->projects->getAll();
@@ -73,7 +101,7 @@ class CacheLoader
         }
     }
 
-    public function loadTags()
+    public function loadTags(): bool
     {
         try {
             $response = $this->weeekClient->workspace->tags->getAll();
@@ -99,7 +127,7 @@ class CacheLoader
         }
     }
 
-    public function loadBoards()
+    public function loadBoards(): bool
     {
         try {
             error_log("[CacheLoader::loadBoards] Начинаем загрузку досок в кеш");
@@ -118,10 +146,8 @@ class CacheLoader
                     
                     error_log("[CacheLoader::loadBoards] Выполняем запрос к API: {$url}");
                     
-                    // Получаем рефлексией доступ к HTTP клиенту
-                    $reflection = new \ReflectionProperty($this->weeekClient->taskManager, 'http');
-                    $reflection->setAccessible(true);
-                    $http = $reflection->getValue($this->weeekClient->taskManager);
+                    // Получаем HTTP-клиент (публичный или через рефлексию)
+                    $http = $this->getHttpClient();
                     
                     // Выполняем запрос
                     $response = $http->get($url);
@@ -177,7 +203,7 @@ class CacheLoader
         }
     }
 
-    public function loadBoardColumns()
+    public function loadBoardColumns(): bool
     {
         try {
             $allBoardColumns = [];
@@ -199,10 +225,8 @@ class CacheLoader
                     
                     error_log("Выполняем запрос к API: {$url}");
                     
-                    // Получаем рефлексией доступ к HTTP клиенту
-                    $reflection = new \ReflectionProperty($this->weeekClient->taskManager, 'http');
-                    $reflection->setAccessible(true);
-                    $http = $reflection->getValue($this->weeekClient->taskManager);
+                    // Получаем HTTP-клиент (публичный или через рефлексию)
+                    $http = $this->getHttpClient();
                     
                     // Выполняем запрос
                     $response = $http->get($url);
@@ -308,7 +332,7 @@ class CacheLoader
         }
     }
 
-    public function loadTasks()
+    public function loadTasks(): bool
     {
         try {
             $response = $this->weeekClient->taskManager->tasks->getAll();

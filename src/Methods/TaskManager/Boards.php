@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 namespace WeeekMcp\Methods\TaskManager;
 
@@ -8,55 +9,71 @@ use Weeek\Client as WeeekClient;
 
 class Boards
 {
-    public function __construct(public WeeekClient $weeekClient, public CacheLoader $cacheLoader, public Cache $cache, public $projectId)
-    {
+    public function __construct(
+        public WeeekClient $weeekClient,
+        public CacheLoader $cacheLoader,
+        public Cache $cache,
+        public ?int $projectId,
+    ) {
         $this->cache = Cache::getInstance();
     }
 
-    public function forceReload()
+    public function forceReload(): bool
     {
-        $this->cacheLoader->loadBoards();
+        return $this->cacheLoader->loadBoards();
     }
     
-    public function all()
+    /**
+     * Возвращает кешированные доски в формате ['lastUpdated' => int, 'data' => list<array>]
+     */
+    public function all(): array
     {
-        $boards = $this->cache->get('boards', ['data' => []]);
+        $boards = $this->cache->get('boards', ['lastUpdated' => 0, 'data' => []]);
         if (empty($boards['data'])) {
-            $boards = $this->cacheLoader->loadBoards();
+            $this->cacheLoader->loadBoards();
+            $boards = $this->cache->get('boards', ['lastUpdated' => 0, 'data' => []]);
         }
         return $boards;
     }
     
-
-    // get by project id
-    public function getByProjectId($projectId)
+    /**
+     * Возвращает список досок по проекту
+     * 
+     * @return array<int, array{id:int,title:string,project_id:int}>
+     */
+    public function getByProjectId(int $projectId): array
     {
         $allBoards = $this->all();
         $boards = [];
         foreach ($allBoards['data'] as $board) {
-            if ($board['project_id'] == $projectId) {
+            if ((int)$board['project_id'] === $projectId) {
                 $boards[] = $board;
             }
         }
         return $boards;
     }
 
-    public function get($id)
+    /**
+     * Возвращает доску по ID
+     */
+    public function get(int $id): ?array
     {
         $boards = $this->all();
-        foreach ($boards as $board) {
-            if ($board['id'] == $id) {
+        foreach ($boards['data'] as $board) {
+            if ((int)$board['id'] === $id) {
                 return $board;  
             }
         }
         return null;
     }
 
-    public function create($data)
+    /**
+     * Создает доску через API и обновляет кеш
+     */
+    public function create(array $data): object
     {
         $response = $this->weeekClient->taskManager->boards->create($data);
-        $this->cacheLoader->loadAllData();
+        $this->cacheLoader->loadBoards();
         return $response;
     }
-    
 }

@@ -1,5 +1,14 @@
 <?php
 
+// ВАЖНО: подавляем любые предупреждения/Deprecated/Notice в STDOUT,
+// чтобы MCP-транспорт получал только валидный JSON. Логи пишем в файл.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+ini_set('log_errors', '1');
+ini_set('error_log', __DIR__ . '/server_log.txt');
+// Отключаем отображение шумных уровней в выводе (без E_STRICT, чтобы не триггерить Deprecated)
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_WARNING & ~E_NOTICE);
+
 require_once __DIR__ . '/vendor/autoload.php';
 
 use Pronskiy\Mcp\Server;
@@ -50,8 +59,8 @@ $server->tool(
     'Создает новую задачу в Weeek',
     function(string $title, ?string $description = null, ?string $project_id = null, ?string $board_id = null, ?string $board_column_id = null, ?string $parent_id = null) use ($weeekClient, $config, $cache, $cacheLoader, $taskManager) {
         try {
-            $projectId = $project_id ?: $config['default_project_id'];
-            $boardId = $board_id ?: ($config['default_board_id'] ?? null);
+            $projectId = $project_id !== null ? (int)$project_id : (int)($config['default_project_id'] ?? 0);
+            $boardId = $board_id !== null ? (int)$board_id : (isset($config['default_board_id']) ? (int)$config['default_board_id'] : null);
             
             $taskData = [
                 'title' => $title,
@@ -65,14 +74,14 @@ $server->tool(
             
             // Добавляем board_column_id, если он указан
             if ($board_column_id) {
-                $taskData['boardColumnId'] = $board_column_id;
+                $taskData['boardColumnId'] = (int)$board_column_id;
             }
             
             if ($description) {
                 $taskData['description'] = $description;
             }
             if ($parent_id) {
-                $taskData['parentId'] = $parent_id;
+                $taskData['parentId'] = (int)$parent_id;
             }
             
             $task = $taskManager->tasks->create($taskData);
@@ -157,26 +166,57 @@ $server->tool(
 // Регистрация инструмента получения задач
 $server->tool(
     'get_tasks',
-    'Получает список задач в Weeek',
+    'Получает задачи. Для фильтра по доске укажите одновременно project_id и board_id (иначе API может вернуть 0). Если передан только board_id, сервер попробует определить project_id автоматически.',
     function(?string $project_id = null, ?string $board_id = null, ?string $board_column_id = null) use ($taskManager, $cache, $config) {
         try {
-            $queryParams = [
-                'projectId' => (int)$project_id ?? $config['default_project_id'],
-                'boardId' => (int)$board_id ?? $config['default_board_id'],
-            ];
-            
-            if ($board_column_id) {
-                $queryParams['boardColumnId'] = (int)$board_column_id;
+            $queryParams = [];
+            $projectId = $project_id !== null ? (int)$project_id : (isset($config['default_project_id']) ? (int)$config['default_project_id'] : null);
+            $boardId = $board_id !== null ? (int)$board_id : (isset($config['default_board_id']) ? (int)$config['default_board_id'] : null);
+
+            // Если указан board_id без project_id — попробуем определить projectId по кешу досок
+            if ($boardId !== null && $projectId === null) {
+                error_log("get_tasks: board_id={$boardId} без project_id — пытаемся определить проект по кешу досок");
+                $boardInfo = $taskManager->boards->get((int)$boardId);
+                if ($boardInfo && isset($boardInfo['project_id'])) {
+                    $projectId = (int)$boardInfo['project_id'];
+                    error_log("get_tasks: project_id определен по кешу: {$projectId}");
+                } else {
+                    // Явная ошибка: для фильтра по доске нужно знать проект
+                    return json_encode([
+                        'status' => 'error',
+                        'code' => 400,
+                        'error' => 'Для фильтрации по доске Weeek API требует указать project_id вместе с board_id',
+                        'hint' => 'Укажите одновременно project_id и board_id или сначала вызовите get_boards(project_id), чтобы получить корректную пару'
+                    ]);
+                }
             }
+            if ($projectId !== null) { $queryParams['projectId'] = $projectId; }
+            if ($boardId !== null) { $queryParams['boardId'] = $boardId; }
+            
+            if ($board_column_id) { $queryParams['boardColumnId'] = (int)$board_column_id; }
             
             $tasks = $taskManager->tasks->getAll($queryParams);
-            
-            return json_encode([
+            $resp = [
                 'status' => 'success',
                 'source' => 'api',
                 'total' => count($tasks),
                 'tasks' => $tasks
-            ]);
+            ];
+
+            // Диагностика: если пришло 0, а пользователь задал только один из параметров
+            if (empty($tasks) && (($boardId !== null) ^ ($projectId !== null))) {
+                $resp['note'] = 'Weeek API часто возвращает пусто, если фильтровать только по board_id или только по project_id. Укажите оба параметра.';
+            }
+
+            // Если project_id был определен автоматически — сообщим об этом
+            if ($board_id !== null && $project_id === null && isset($queryParams['projectId'])) {
+                $resp['inferred'] = [
+                    'project_id' => $queryParams['projectId'],
+                    'reason' => 'Определено по кешу досок по board_id'
+                ];
+            }
+
+            return json_encode($resp);
         } catch (Exception $e) {
             return json_encode([
                 'status' => 'error',
@@ -331,16 +371,23 @@ $server->tool(
 // Регистрация инструмента изменения доски задачи
 $server->tool(
     'update_task_board',
-    'Перемещает задачу на другую доску в Weeek',
+    'Перемещает TM-задачу на другую доску. Важно: доска должна принадлежать тому же проекту, что и задача. Для задач, прикрепленных к CRM-сделке, используйте инструмент move_deal_task.',
     function(string $task_id, string $board_id) use ($taskManager) {
         try {
+            error_log("update_task_board: task_id={$task_id}, board_id={$board_id}");
             $result = $taskManager->tasks->updateBoard((int)$task_id, (int)$board_id);
+            if (!$result) {
+                error_log("update_task_board: FAIL for task {$task_id} -> board {$board_id}");
+            } else {
+                error_log("update_task_board: OK new board_id=" . ($result['board_id'] ?? 'n/a'));
+            }
             
             if (!$result) {
                 return json_encode([
                     'status' => 'error',
                     'error' => 'Не удалось переместить задачу на другую доску',
-                    'code' => 500
+                    'code' => 500,
+                    'hint' => 'Проверьте, что доска принадлежит тому же проекту. Если это CRM-задача внутри сделки, используйте move_deal_task.'
                 ]);
             }
             
@@ -363,17 +410,24 @@ $server->tool(
 // Регистрация инструмента изменения колонки доски задачи
 $server->tool(
     'update_task_board_column',
-    'Перемещает задачу в другую колонку доски в Weeek',
+    'Перемещает TM-задачу в другую колонку доски. Убедитесь, что колонка принадлежит правильной доске/проекту. Для CRM-задач используйте move_deal_task.',
     function(string $task_id, string $board_column_id, ?string $upper_task_id = null) use ($taskManager) {
         try {
             $upperTaskId = $upper_task_id ? (int)$upper_task_id : null;
+            error_log("update_task_board_column: task_id={$task_id}, board_column_id={$board_column_id}, upper_task_id=" . var_export($upperTaskId, true));
             $result = $taskManager->tasks->updateBoardColumn((int)$task_id, (int)$board_column_id, $upperTaskId);
+            if (!$result) {
+                error_log("update_task_board_column: FAIL for task {$task_id} -> column {$board_column_id}");
+            } else {
+                error_log("update_task_board_column: OK");
+            }
             
             if (!$result) {
                 return json_encode([
                     'status' => 'error',
                     'error' => 'Не удалось переместить задачу в другую колонку доски',
-                    'code' => 500
+                    'code' => 500,
+                    'hint' => 'Проверьте корректность board_column_id и принадлежность к нужной доске/проекту. Если это CRM-задача, используйте move_deal_task.'
                 ]);
             }
             
@@ -388,6 +442,44 @@ $server->tool(
                 'status' => 'error',
                 'error' => $e->getMessage(),
                 'code' => $e->getCode()
+            ]);
+        }
+    }
+);
+
+// Перемещение задачи внутри сделки (CRM): POST /crm/deals/{id}/tasks/{taskId}/move
+$server->tool(
+    'move_deal_task',
+    'CRM: перемещает задачу, прикрепленную к сделке, относительно previousTaskId. Используйте для задач в разделе CRM, а не для TM-задач.',
+    function(string $deal_id, string $task_id, ?string $previous_task_id = null) use ($weeekClient) {
+        try {
+            $prevId = $previous_task_id !== null && $previous_task_id !== '' ? (int)$previous_task_id : null;
+            error_log("move_deal_task: deal_id={$deal_id}, task_id={$task_id}, previous_task_id=" . var_export($prevId, true));
+            $resp = $weeekClient->crm->deals->moveSubtask($deal_id, (int)$task_id, $prevId);
+
+            return json_encode([
+                'status' => 'success',
+                'message' => 'Задача перемещена внутри сделки',
+                'deal_id' => $deal_id,
+                'task_id' => (int)$task_id,
+                'previous_task_id' => $prevId
+            ]);
+        } catch (\Weeek\Exceptions\ApiErrorException $e) {
+            error_log('move_deal_task ApiError: ' . $e->getMessage() . ' | details=' . json_encode($e->getDetails()));
+            return json_encode([
+                'status' => 'error',
+                'error' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'details' => $e->getDetails(),
+                'hint' => 'Убедитесь, что task_id принадлежит этой сделке. Для TM-задач используйте инструменты update_task_board и update_task_board_column.'
+            ]);
+        } catch (\Exception $e) {
+            error_log('move_deal_task Exception: ' . $e->getMessage());
+            return json_encode([
+                'status' => 'error',
+                'error' => $e->getMessage(),
+                'code' => $e->getCode() ?: 500,
+                'hint' => 'Это инструмент CRM. Для TM-задач используйте инструменты update_task_board и update_task_board_column.'
             ]);
         }
     }
@@ -428,7 +520,7 @@ $server->tool(
 // Получение списка досок - исправлено с учетом типа возвращаемого значения
 $server->tool(
     'get_boards',
-    'Получает список досок в Weeek',
+    'Получает список досок. Рекомендуется передавать project_id: Weeek API возвращает доски в контексте проекта, а пары (project_id, board_id) далее используются для корректной фильтрации задач.',
     function(?string $project_id = null) use ($weeekClient, $config, $cache, $cacheLoader, $taskManager) {
         try {
             // Если данных нет в кеше или указан конкретный project_id
@@ -1167,7 +1259,7 @@ $server->tool(
     'Добавляет запись ручного учета времени для задачи в Weeek',
     function(string $task_id, ?string $user_id, string $date, int $duration, ?string $comment = null, ?bool $is_overtime = false) use ($weeekClient, $cacheLoader, $cache, $taskManager, $config) {
         try {
-            $user_id = $user_id ?? $config['user_id'] ?? null;
+            $user_id = $user_id ?? ($config['default_user_id'] ?? null);
             if (empty($task_id) || empty($user_id) || empty($date) || $duration <= 0) {
                 return json_encode([
                     'status' => 'error',

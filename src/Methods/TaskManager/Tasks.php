@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 namespace WeeekMcp\Methods\TaskManager;
 
@@ -11,7 +12,7 @@ class Tasks
 {
     public $cache;
     public $cacheLoader;
-    public function __construct(public TaskManager $taskManager, public $projectId, public $boardId)
+    public function __construct(public TaskManager $taskManager, public ?int $projectId, public ?int $boardId)
     {
         $this->cache = $this->taskManager->cache;
         $this->cacheLoader = $taskManager->cacheLoader;
@@ -148,14 +149,8 @@ class Tasks
     public function update(int $id, array $data): bool
     {
         try {
- 
-
             if (empty($data)) {
-                return json_encode([
-                    'status' => 'error',
-                    'error' => 'Не указаны данные для обновления',
-                    'code' => 400
-                ]);
+                return false;
             }
 
             // Прямой вызов HTTP-метода update
@@ -236,6 +231,7 @@ class Tasks
                 'board_id' => $response->task->boardId
             ];
         } catch (\Exception $e) {
+            \error_log('[Tasks::updateBoard] id=' . $id . ', boardId=' . \var_export($boardId, true) . ' error: ' . $e->getMessage());
             return null;
         }
     }
@@ -258,6 +254,7 @@ class Tasks
             
             return true;
         } catch (\Exception $e) {
+            \error_log('[Tasks::updateBoardColumn] id=' . $id . ', boardColumnId=' . $boardColumnId . ', upperTaskId=' . \var_export($upperTaskId, true) . ' error: ' . $e->getMessage());
             return false;
         }
     }

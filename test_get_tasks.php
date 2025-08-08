@@ -14,7 +14,7 @@ $config = json_decode(file_get_contents($configFile), true);
 // Создание клиента Weeek API
 $apiToken = $config['auth']['weeek_api_token'];
 $weeekClient = new WeeekClient($apiToken);
-$projectId = 1;
+$projectId = (int)($config['default_project_id'] ?? 1);
 
 // Инициализация кеша
 $cache = Cache::getInstance();
@@ -24,7 +24,7 @@ $cacheLoader = new CacheLoader($weeekClient, $config);
 $taskManager = new TaskManager($weeekClient, $cacheLoader, $cache, $projectId);
 
 // Инициализация менеджера задач
-$tasksManager = new Tasks($weeekClient, $cacheLoader, $cache, $projectId, null);
+$tasksManager = new Tasks($taskManager, $projectId, null);
 
 // Загрузка данных
 $cacheLoader->loadAllData();
@@ -87,14 +87,14 @@ foreach ($tasks as $task) {
 
 // 2. Получение задач конкретной доски
 echo "\n2. Получение задач конкретной доски:\n";
-// Получаем список досок
-$boardsResponse = $weeekClient->taskManager->boards->getAll(['projectId' => $projectId]);
+// Получаем список досок через наш обертку-менеджер, чтобы избежать несовместимости типов клиента
+$boards = $taskManager->boards->getByProjectId($projectId);
 $boardId = null;
 
 // Выбираем первую доску из списка
-if (isset($boardsResponse->boards) && count($boardsResponse->boards) > 0) {
-    $boardId = $boardsResponse->boards[0]->id;
-    $boardName = $boardsResponse->boards[0]->name;
+if (!empty($boards)) {
+    $boardId = $boards[0]['id'];
+    $boardName = $boards[0]['title'] ?? ($boards[0]['name'] ?? 'Доска');
     
     echo "Используем доску: $boardName (ID: $boardId)\n";
     $queryParams = [
